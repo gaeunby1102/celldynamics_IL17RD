@@ -17,7 +17,7 @@ suppressPackageStartupMessages({
   library(forcats)
 })
 
-version_tag <- "v1.0.0"
+version_tag <- "v2.0.0"  # residual L2 (expression-corrected) applied to E1/E2/E3/G
 
 # ── Paths ─────────────────────────────────────────────────────
 BASE     <- "/data2/Atlas_Normal/IL17RD_scdiffeq/results/trial6"
@@ -61,14 +61,33 @@ gene_colors <- c(
 REF_GENES <- names(gene_colors)
 
 # ── Load data ─────────────────────────────────────────────────
-bio70  <- read_csv(file.path(SCAN_DIR, "allgene_ko_scan_t70d_RG_bio.csv"),  show_col_types = FALSE)
-bio115 <- read_csv(file.path(SCAN_DIR, "allgene_ko_scan_t115d_RG_bio.csv"), show_col_types = FALSE)
-sim70  <- read_csv(file.path(SCAN_DIR, "topgene_sim_t70d_RG.csv"),  show_col_types = FALSE)
-sim115 <- read_csv(file.path(SCAN_DIR, "topgene_sim_t115d_RG.csv"), show_col_types = FALSE)
+# Residual CSVs: expression-corrected L2 (resid_rank, residual_l2)
+res70  <- read_csv(file.path(SCAN_DIR, "allgene_ko_scan_t70d_RG_residual.csv"),  show_col_types = FALSE)
+res115 <- read_csv(file.path(SCAN_DIR, "allgene_ko_scan_t115d_RG_residual.csv"), show_col_types = FALSE)
 
-# Label ref genes
-bio70  <- bio70  %>% mutate(is_ref = gene %in% REF_GENES)
-bio115 <- bio115 %>% mutate(is_ref = gene %in% REF_GENES)
+sim70_raw  <- read_csv(file.path(SCAN_DIR, "topgene_sim_t70d_RG.csv"),  show_col_types = FALSE)
+sim115_raw <- read_csv(file.path(SCAN_DIR, "topgene_sim_t115d_RG.csv"), show_col_types = FALSE)
+
+# ── Correct sim_l2_end for expression within each top-gene set ────
+correct_sim <- function(sim_raw, res_df) {
+  df <- sim_raw %>%
+    left_join(res_df %>% select(gene, residual_l2, resid_rank), by = "gene") %>%
+    mutate(
+      is_ref        = gene %in% REF_GENES,
+      log_mean_expr = log1p(mean_expr)
+    )
+  # Fit and compute residual of sim_l2_end ~ log(mean_expr) + frac_expr
+  fit <- lm(sim_l2_end ~ log_mean_expr + frac_expr, data = df)
+  df$residual_sim <- residuals(fit)
+  df$resid_sim_rank <- rank(-df$residual_sim, ties.method = "first")
+  cat(sprintf("  sim_l2_end expression R^2 = %.3f\n", summary(fit)$r.squared))
+  df
+}
+
+cat("[t70d] Correcting sim_l2_end:\n")
+sim70  <- correct_sim(sim70_raw,  res70)
+cat("[t115d] Correcting sim_l2_end:\n")
+sim115 <- correct_sim(sim115_raw, res115)
 
 # ============================================================
 # Fig E — All-gene KO Landscape
@@ -77,97 +96,100 @@ bio115 <- bio115 %>% mutate(is_ref = gene %in% REF_GENES)
 # E3: Top 20 barplot
 # ============================================================
 
-# ── E1: landscape scatter helper ─────────────────────────────
-make_landscape <- function(bio_df, timepoint_label, tag) {
-  ref_df  <- bio_df %>% filter(is_ref)
-  rest_df <- bio_df %>% filter(!is_ref)
+# ── E1: landscape scatter — expression-corrected ─────────────
+make_landscape <- function(res_df, timepoint_label, tag) {
+  ref_df  <- res_df %>% filter(is_ref)
+  rest_df <- res_df %>% filter(!is_ref)
 
   ggplot() +
     geom_point(data = rest_df,
-               aes(x = bio_rank, y = ko_l2_mean),
+               aes(x = resid_rank, y = residual_l2),
                color = "#AAAAAA", size = 0.8, alpha = 0.5) +
+    geom_hline(yintercept = 0, linetype = "dashed",
+               color = "#888888", linewidth = 0.4) +
     geom_point(data = ref_df,
-               aes(x = bio_rank, y = ko_l2_mean, color = gene),
+               aes(x = resid_rank, y = residual_l2, color = gene),
                size = 3.5, alpha = 0.9) +
     geom_text_repel(data = ref_df,
-                    aes(x = bio_rank, y = ko_l2_mean, label = gene, color = gene),
+                    aes(x = resid_rank, y = residual_l2, label = gene, color = gene),
                     size = 3.5, fontface = "italic",
                     box.padding = 0.4, point.padding = 0.3,
                     min.segment.length = 0.2, max.overlaps = 20,
                     show.legend = FALSE) +
     scale_color_manual(values = gene_colors, name = NULL) +
     labs(
-      title = sprintf("All-gene KO landscape  [%s]", timepoint_label),
-      x     = "Biological rank (by KO L2, HK-filtered)",
-      y     = "Mean paired L2 at t=0",
+      title = sprintf("KO landscape (expression-corrected)  [%s]", timepoint_label),
+      x     = "Rank by residual L2",
+      y     = "Residual KO L2 at t=0",
       tag   = tag
     ) +
     theme_step1() +
     theme(legend.position = "right")
 }
 
-pE1a <- make_landscape(bio70,  "t70d RG",  "E1")
-pE1b <- make_landscape(bio115, "t115d RG", "E2")
+pE1a <- make_landscape(res70,  "t70d RG",  "E1")
+pE1b <- make_landscape(res115, "t115d RG", "E2")
 
-# ── E2: Scan vs Simulation scatter ───────────────────────────
+# ── E2: Scan vs Simulation — both expression-corrected ───────
 make_scan_sim <- function(sim_df, timepoint_label, tag) {
-  r_val <- cor(sim_df$scan_l2, sim_df$sim_l2_end, method = "spearman")
+  r_val <- cor(sim_df$residual_l2, sim_df$residual_sim, method = "spearman")
 
   ref_df  <- sim_df %>% filter(is_ref)
   rest_df <- sim_df %>% filter(!is_ref)
 
   ggplot() +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "#AAAAAA", linewidth = 0.4) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "#AAAAAA", linewidth = 0.4) +
     geom_point(data = rest_df,
-               aes(x = scan_l2, y = sim_l2_end),
+               aes(x = residual_l2, y = residual_sim),
                color = "#555555", size = 1.5, alpha = 0.4) +
     geom_point(data = ref_df,
-               aes(x = scan_l2, y = sim_l2_end, color = gene),
+               aes(x = residual_l2, y = residual_sim, color = gene),
                size = 4, alpha = 0.95) +
     geom_text_repel(data = ref_df,
-                    aes(x = scan_l2, y = sim_l2_end, label = gene, color = gene),
+                    aes(x = residual_l2, y = residual_sim, label = gene, color = gene),
                     size = 3.5, fontface = "italic",
                     box.padding = 0.4, point.padding = 0.3,
                     min.segment.length = 0.2, max.overlaps = 20,
                     show.legend = FALSE) +
     scale_color_manual(values = gene_colors, name = NULL) +
     labs(
-      title = sprintf("Scan vs Simulation  [%s]\nSpearman r = %.3f", timepoint_label, r_val),
-      x     = "KO L2 at t=0 (encoding scan)",
-      y     = "KO L2 at t=1.0 (trajectory simulation)",
+      title = sprintf("Scan vs Simulation (expression-corrected)  [%s]\nSpearman r = %.3f",
+                      timepoint_label, r_val),
+      x     = "Residual KO L2 at t=0 (corrected scan)",
+      y     = "Residual KO L2 at t=1.0 (corrected simulation)",
       tag   = tag
     ) +
     theme_step1() +
     theme(legend.position = "right")
 }
 
-pE2a <- make_scan_sim(sim70  %>% mutate(is_ref = gene %in% REF_GENES), "t70d RG",  "E3")
-pE2b <- make_scan_sim(sim115 %>% mutate(is_ref = gene %in% REF_GENES), "t115d RG", "E4")
+pE2a <- make_scan_sim(sim70,  "t70d RG",  "E3")
+pE2b <- make_scan_sim(sim115, "t115d RG", "E4")
 
-# ── E3: Top 20 barplot ────────────────────────────────────────
+# ── E3: Top 20 barplot — ranked by residual sim L2 ───────────
 make_top20_bar <- function(sim_df, timepoint_label, tag) {
   top20 <- sim_df %>%
-    arrange(desc(sim_l2_end)) %>%
+    arrange(resid_sim_rank) %>%
     slice_head(n = 20) %>%
-    mutate(
-      gene  = fct_reorder(gene, sim_l2_end),
-      color = ifelse(gene %in% REF_GENES, as.character(gene_colors[as.character(gene)]), "#AAAAAA")
-    )
+    mutate(gene = fct_reorder(gene, residual_sim))
 
-  ggplot(top20, aes(x = gene, y = sim_l2_end, fill = gene)) +
+  fill_vals <- setNames(
+    ifelse(levels(top20$gene) %in% REF_GENES,
+           gene_colors[levels(top20$gene)],
+           "#AAAAAA"),
+    levels(top20$gene)
+  )
+
+  ggplot(top20, aes(x = gene, y = residual_sim, fill = gene)) +
     geom_col(width = 0.7, show.legend = FALSE) +
-    scale_fill_manual(
-      values = setNames(
-        ifelse(levels(top20$gene) %in% REF_GENES,
-               gene_colors[levels(top20$gene)],
-               "#AAAAAA"),
-        levels(top20$gene)
-      )
-    ) +
+    geom_hline(yintercept = 0, linewidth = 0.4, color = "black") +
+    scale_fill_manual(values = fill_vals) +
     coord_flip() +
     labs(
-      title = sprintf("Top 20 trajectory divergence  [%s]", timepoint_label),
+      title = sprintf("Top 20 trajectory divergence (expression-corrected)  [%s]", timepoint_label),
       x     = NULL,
-      y     = "KO L2 at t=1.0",
+      y     = "Residual KO L2 at t=1.0",
       tag   = tag
     ) +
     theme_step1() +
@@ -291,44 +313,48 @@ cat(sprintf("✓ Saved: figF_geneprogram_validation_%s\n", version_tag))
 # IL17RD rank in landscape + known targets highlighted
 # ============================================================
 
-make_il17rd_focus <- function(bio_df, sim_df, tp_label) {
-  il17rd_bio <- bio_df %>% filter(gene == "IL17RD")
-  il17rd_sim <- sim_df %>% filter(gene == "IL17RD")
+make_il17rd_focus <- function(res_df, sim_df, tp_label) {
+  il17rd_res <- res_df %>% filter(gene == "IL17RD")
+  n_total    <- nrow(res_df)
 
-  # Sub-panel 1: rank context in bio landscape
-  n_total <- nrow(bio_df)
-  p1 <- ggplot(bio_df, aes(x = bio_rank, y = ko_l2_mean)) +
+  # Sub-panel 1: IL17RD rank in expression-corrected landscape
+  p1 <- ggplot(res_df, aes(x = resid_rank, y = residual_l2)) +
     geom_point(color = "#CCCCCC", size = 0.6, alpha = 0.5) +
-    geom_point(data = il17rd_bio,
-               aes(x = bio_rank, y = ko_l2_mean),
+    geom_hline(yintercept = 0, linetype = "dashed", color = "#AAAAAA", linewidth = 0.4) +
+    geom_point(data = il17rd_res,
+               aes(x = resid_rank, y = residual_l2),
                color = gene_colors["IL17RD"], size = 4) +
-    geom_text_repel(data = il17rd_bio,
-                    aes(x = bio_rank, y = ko_l2_mean, label = sprintf("IL17RD\n(rank %d/%d)", bio_rank, n_total)),
+    geom_text_repel(data = il17rd_res,
+                    aes(x = resid_rank, y = residual_l2,
+                        label = sprintf("IL17RD\n(rank %d/%d)", resid_rank, n_total)),
                     color = gene_colors["IL17RD"], size = 3.5, fontface = "bold.italic",
-                    nudge_x = n_total * 0.1, nudge_y = 0.01) +
-    labs(title = sprintf("IL17RD KO rank  [%s]", tp_label),
-         x = "Biological rank", y = "KO L2 at t=0") +
+                    nudge_x = n_total * 0.08, nudge_y = 0.005) +
+    labs(title = sprintf("IL17RD KO rank (expression-corrected)  [%s]", tp_label),
+         x = "Rank by residual L2", y = "Residual KO L2 at t=0") +
     theme_step1()
 
-  # Sub-panel 2: scan vs sim for all ref genes, sized by sim rank
-  ref_sim <- sim_df %>% filter(gene %in% REF_GENES) %>%
+  # Sub-panel 2: ref genes — corrected scan vs corrected sim
+  ref_sim <- sim_df %>%
+    filter(gene %in% REF_GENES) %>%
     mutate(gene = factor(gene, levels = REF_GENES))
 
-  p2 <- ggplot(ref_sim, aes(x = scan_l2, y = sim_l2_end, color = gene, label = gene)) +
+  p2 <- ggplot(ref_sim, aes(x = residual_l2, y = residual_sim, color = gene, label = gene)) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "#AAAAAA", linewidth = 0.4) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "#AAAAAA", linewidth = 0.4) +
     geom_point(size = 4) +
     geom_text_repel(size = 3.5, fontface = "italic", box.padding = 0.5,
                     show.legend = FALSE) +
     scale_color_manual(values = gene_colors, name = NULL) +
-    labs(title = sprintf("Ref gene KO effects  [%s]", tp_label),
-         x = "KO L2 at t=0 (scan)", y = "KO L2 at t=1.0 (simulation)") +
+    labs(title = sprintf("Ref gene KO effects (expression-corrected)  [%s]", tp_label),
+         x = "Residual L2 at t=0", y = "Residual L2 at t=1.0") +
     theme_step1() +
     theme(legend.position = "none")
 
   p1 | p2
 }
 
-pG_70  <- make_il17rd_focus(bio70,  sim70,  "t70d RG")
-pG_115 <- make_il17rd_focus(bio115, sim115, "t115d RG")
+pG_70  <- make_il17rd_focus(res70,  sim70,  "t70d RG")
+pG_115 <- make_il17rd_focus(res115, sim115, "t115d RG")
 
 figG <- (pG_70 / pG_115) +
   plot_annotation(
