@@ -1,0 +1,43 @@
+# Large binary data files
+*.npy
+*.h5ad
+*.h5
+*.loom
+*.ckpt
+*.pt
+*.pth
+
+# Model directories
+LightningSDE-*/
+checkpoints/
+lightning_logs/
+
+# Latent cache directories
+results/trial6/perturb_latents_*/
+results/trial6/allgene_scan/topgene_latents_*/
+results/trial5/
+
+# Logs
+*.log
+scdiffeq.log
+.log_cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+*.ipynb
+
+# Claude internal
+.claude/
+
+# Large result subdirs (keep CSVs and figures only)
+results/trial6/traj_divergence/
+results/trial6/umap_viz/
+results/trial6/validation/
+results/trial6/interp_quasi/
+
+# Misc
+.DS_Store
+*.swp
